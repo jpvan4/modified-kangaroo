@@ -19,544 +19,192 @@
 // 256(+64) bits integer CUDA libray for SECPK1
 // ---------------------------------------------------------------------------------
 
-// We need 1 extra block for ModInv
+
+
+#ifndef GPUMATHH
+#define GPUMATHH
+
+#include <cuda.h>
+#include <stdint.h>
+
 #define NBBLOCK 5
 #define BIFULLSIZE 40
 
-// Assembly directives
-#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory" );
-#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory" );
-#define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b));
+// --- CUDA asm helpers ---
+#define UADDO(c,a,b) asm volatile("add.cc.u64 %0,%1,%2;" : "=l"(c) : "l"(a), "l"(b));
+#define UADDC(c,a,b) asm volatile("addc.cc.u64 %0,%1,%2;" : "=l"(c) : "l"(a), "l"(b));
+#define UADD(c,a,b)  asm volatile("addc.u64 %0,%1,%2;" : "=l"(c) : "l"(a), "l"(b));
 
-#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory" );
-#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory" );
-#define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a));
+#define USUBO(c,a,b) asm volatile("sub.cc.u64 %0,%1,%2;" : "=l"(c) : "l"(a), "l"(b));
+#define USUBC(c,a,b) asm volatile("subc.cc.u64 %0,%1,%2;" : "=l"(c) : "l"(a), "l"(b));
+#define USUB(c,a,b)  asm volatile("subc.u64 %0,%1,%2;" : "=l"(c) : "l"(a), "l"(b));
 
-#define USUBO(c, a, b) asm volatile ("sub.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory" );
-#define USUBC(c, a, b) asm volatile ("subc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory" );
-#define USUB(c, a, b) asm volatile ("subc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b));
+#define UMULLO(lo,a,b) asm volatile("mul.lo.u64 %0,%1,%2;" : "=l"(lo) : "l"(a), "l"(b));
+#define UMULHI(hi,a,b) asm volatile("mul.hi.u64 %0,%1,%2;" : "=l"(hi) : "l"(a), "l"(b));
 
-#define USUBO1(c, a) asm volatile ("sub.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory" );
-#define USUBC1(c, a) asm volatile ("subc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory" );
-#define USUB1(c, a) asm volatile ("subc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) );
+#define MADDO(r,a,b,c)  asm volatile("mad.lo.cc.u64 %0,%1,%2,%3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
+#define MADDC(r,a,b,c)  asm volatile("madc.lo.cc.u64 %0,%1,%2,%3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
+#define MADD(r,a,b,c)   asm volatile("madc.lo.u64 %0,%1,%2,%3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
 
-#define UMULLO(lo,a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b));
-#define UMULHI(hi,a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b));
-#define MADDO(r,a,b,c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory" );
-#define MADDC(r,a,b,c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory" );
-#define MADD(r,a,b,c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c));
-
-// Jump distance
-__device__ __constant__ uint64_t jD[NB_JUMP][2];
-// jump points
-__device__ __constant__ uint64_t jPx[NB_JUMP][4];
-__device__ __constant__ uint64_t jPy[NB_JUMP][4];
-
-#ifdef USE_SYMMETRY
-__device__ __constant__ uint64_t _O[] = { 0xBFD25E8CD0364141ULL,0xBAAEDCE6AF48A03BULL,0xFFFFFFFFFFFFFFFEULL,0xFFFFFFFFFFFFFFFFULL };
-#endif
-
-
-#define HSIZE (GRP_SIZE / 2 - 1)
-
-// 64bits lsb negative inverse of P (mod 2^64)
 #define MM64 0xD838091DD2253531ULL
 
-// ---------------------------------------------------------------------------------------
+///////////////////////////////////////////////////////////////////////////////
 
-#define _IsPositive(x) (((int64_t)(x[4]))>=0LL)
-#define _IsNegative(x) (((int64_t)(x[4]))<0LL)
-#define _IsEqual(a,b)  ((a[4] == b[4]) && (a[3] == b[3]) && (a[2] == b[2]) && (a[1] == b[1]) && (a[0] == b[0]))
-#define _IsZero(a)     ((a[4] | a[3] | a[2] | a[1] | a[0]) == 0ULL)
-#define _IsOne(a)      ((a[4] == 0ULL) && (a[3] == 0ULL) && (a[2] == 0ULL) && (a[1] == 0ULL) && (a[0] == 1ULL))
-
-#define IDX threadIdx.x
-
-#define bswap32(v) __byte_perm(v, 0, 0x0123)
-
-// ---------------------------------------------------------------------------------------
-
-#define Add2(r, a, b) {\
-  UADDO(r[0], a[0], b[0]); \
-  UADDC(r[1], a[1], b[1]); \
-  UADDC(r[2], a[2], b[2]); \
-  UADDC(r[3], a[3], b[3]); \
-  UADD(r[4], a[4], b[4]);}
-
-// ---------------------------------------------------------------------------------------
-
-#define Add1(r,a) { \
-  UADDO1(r[0], a[0]); \
-  UADDC1(r[1], a[1]); \
-  UADDC1(r[2], a[2]); \
-  UADDC1(r[3], a[3]); \
-  UADD1(r[4], a[4]);}
-
-// ---------------------------------------------------------------------------------------
-
-#define AddP(r) { \
-  UADDO1(r[0], 0xFFFFFFFEFFFFFC2FULL); \
-  UADDC1(r[1], 0xFFFFFFFFFFFFFFFFULL); \
-  UADDC1(r[2], 0xFFFFFFFFFFFFFFFFULL); \
-  UADDC1(r[3], 0xFFFFFFFFFFFFFFFFULL); \
-  UADD1(r[4], 0ULL);}
-
-// ---------------------------------------------------------------------------------------
-
-#define SubP(r) { \
-  USUBO1(r[0], 0xFFFFFFFEFFFFFC2FULL); \
-  USUBC1(r[1], 0xFFFFFFFFFFFFFFFFULL); \
-  USUBC1(r[2], 0xFFFFFFFFFFFFFFFFULL); \
-  USUBC1(r[3], 0xFFFFFFFFFFFFFFFFULL); \
-  USUB1(r[4], 0ULL);}
-
-// ---------------------------------------------------------------------------------------
-
-#define Sub2(r,a,b)  {\
-  USUBO(r[0], a[0], b[0]); \
-  USUBC(r[1], a[1], b[1]); \
-  USUBC(r[2], a[2], b[2]); \
-  USUBC(r[3], a[3], b[3]); \
-  USUB(r[4], a[4], b[4]);}
-
-// ---------------------------------------------------------------------------------------
-
-#define Sub1(r,a) {\
-  USUBO1(r[0], a[0]); \
-  USUBC1(r[1], a[1]); \
-  USUBC1(r[2], a[2]); \
-  USUBC1(r[3], a[3]); \
-  USUB1(r[4], a[4]);}
-
-// ---------------------------------------------------------------------------------------
-
-#define Add128(r,a) { \
-  UADDO1((r)[0], (a)[0]); \
-  UADD1((r)[1], (a)[1]);}
-
-// ---------------------------------------------------------------------------------------
-
-#define Neg(r) {\
-USUBO(r[0],0ULL,r[0]); \
-USUBC(r[1],0ULL,r[1]); \
-USUBC(r[2],0ULL,r[2]); \
-USUBC(r[3],0ULL,r[3]); \
-USUB(r[4],0ULL,r[4]); }
-
-// ---------------------------------------------------------------------------------------
-
-#define Mult2(r, a, b) {\
-  UMULLO(r[0],a[0],b); \
-  UMULLO(r[1],a[1],b); \
-  MADDO(r[1], a[0],b,r[1]); \
-  UMULLO(r[2],a[2], b); \
-  MADDC(r[2], a[1], b, r[2]); \
-  UMULLO(r[3],a[3], b); \
-  MADDC(r[3], a[2], b, r[3]); \
-  UMULLO(r[4],a[4], b); \
-  MADD(r[4], a[3], b, r[4]);}
-
-// ---------------------------------------------------------------------------------------
-
-#define UMult(r, a, b) {\
-  UMULLO(r[0],a[0],b); \
-  UMULLO(r[1],a[1],b); \
-  MADDO(r[1], a[0],b,r[1]); \
-  UMULLO(r[2],a[2], b); \
-  MADDC(r[2], a[1], b, r[2]); \
-  UMULLO(r[3],a[3], b); \
-  MADDC(r[3], a[2], b, r[3]); \
-  MADD(r[4], a[3], b, 0ULL);}
-
-// ---------------------------------------------------------------------------------------
-
-#define Load(r, a) {\
-  (r)[0] = (a)[0]; \
-  (r)[1] = (a)[1]; \
-  (r)[2] = (a)[2]; \
-  (r)[3] = (a)[3]; \
-  (r)[4] = (a)[4];}
-
-// ---------------------------------------------------------------------------------------
-
-#define _LoadI64(r, a) {\
-  (r)[0] = a; \
-  (r)[1] = a>>63; \
-  (r)[2] = (r)[1]; \
-  (r)[3] = (r)[1]; \
-  (r)[4] = (r)[1];}
-
-// ---------------------------------------------------------------------------------------
-
-#define Load256(r, a) {\
-  (r)[0] = (a)[0]; \
-  (r)[1] = (a)[1]; \
-  (r)[2] = (a)[2]; \
-  (r)[3] = (a)[3];}
-
-// ---------------------------------------------------------------------------------------
-
-#define OutputDP(x,d,idx) {\
-out[pos*ITEM_SIZE32 + 1] = ((uint32_t *)x)[0]; \
-out[pos*ITEM_SIZE32 + 2] = ((uint32_t *)x)[1]; \
-out[pos*ITEM_SIZE32 + 3] = ((uint32_t *)x)[2]; \
-out[pos*ITEM_SIZE32 + 4] = ((uint32_t *)x)[3]; \
-out[pos*ITEM_SIZE32 + 5] = ((uint32_t *)x)[4]; \
-out[pos*ITEM_SIZE32 + 6] = ((uint32_t *)x)[5]; \
-out[pos*ITEM_SIZE32 + 7] = ((uint32_t *)x)[6]; \
-out[pos*ITEM_SIZE32 + 8] = ((uint32_t *)x)[7]; \
-out[pos*ITEM_SIZE32 + 9] = ((uint32_t *)d)[0]; \
-out[pos*ITEM_SIZE32 + 10] = ((uint32_t *)d)[1]; \
-out[pos*ITEM_SIZE32 + 11] = ((uint32_t *)d)[2]; \
-out[pos*ITEM_SIZE32 + 12] = ((uint32_t *)d)[3]; \
-out[pos*ITEM_SIZE32 + 13] = ((uint32_t *)idx)[0]; \
-out[pos*ITEM_SIZE32 + 14] = ((uint32_t *)idx)[1]; \
+__device__ __forceinline__ void Add256(uint64_t *r, const uint64_t *a, const uint64_t *b) {
+    uint64_t c;
+    UADDO(r[0], a[0], b[0]);
+    UADDC(r[1], a[1], b[1]);
+    UADDC(r[2], a[2], b[2]);
+    UADDC(r[3], a[3], b[3]);
 }
 
-// ---------------------------------------------------------------------------------------
-
-#ifdef USE_SYMMETRY
-__device__ void LoadKangaroos(uint64_t *a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][2],uint64_t *jumps) {
-#else
-__device__ void LoadKangaroos(uint64_t * a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][2]) {
-#endif
-
-  for(int g = 0; g<GPU_GRP_SIZE; g++) {
-    
-    uint64_t *x64 = (uint64_t *)px[g];
-    uint64_t *y64 = (uint64_t *)py[g];
-    uint64_t *d64 = (uint64_t *)dist[g];
-    uint32_t stride = g * KSIZE * blockDim.x;
-
-    x64[0] = (a)[IDX + 0 * blockDim.x + stride];
-    x64[1] = (a)[IDX + 1 * blockDim.x + stride];
-    x64[2] = (a)[IDX + 2 * blockDim.x + stride];
-    x64[3] = (a)[IDX + 3 * blockDim.x + stride];
-
-    y64[0] = (a)[IDX + 4 * blockDim.x + stride];
-    y64[1] = (a)[IDX + 5 * blockDim.x + stride];
-    y64[2] = (a)[IDX + 6 * blockDim.x + stride];
-    y64[3] = (a)[IDX + 7 * blockDim.x + stride];
-
-    d64[0] = (a)[IDX + 8 * blockDim.x + stride];
-    d64[1] = (a)[IDX + 9 * blockDim.x + stride];
-
-#ifdef USE_SYMMETRY
-    jumps[g] = (a)[IDX + 10 * blockDim.x + stride];
-#endif
-  }
-
+__device__ __forceinline__ void Sub256(uint64_t *r, const uint64_t *a, const uint64_t *b) {
+    uint64_t c;
+    USUBO(r[0], a[0], b[0]);
+    USUBC(r[1], a[1], b[1]);
+    USUBC(r[2], a[2], b[2]);
+    USUBC(r[3], a[3], b[3]);
 }
 
-// ---------------------------------------------------------------------------------------
+///////////////////////////////////////////////////////////////////////////////
 
-#ifdef USE_SYMMETRY
-__device__ void StoreKangaroos(uint64_t *a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][2],uint64_t *jumps) {
-#else
-__device__ void StoreKangaroos(uint64_t * a,uint64_t px[GPU_GRP_SIZE][4],uint64_t py[GPU_GRP_SIZE][4],uint64_t dist[GPU_GRP_SIZE][2]) {
-#endif
+__device__ __forceinline__ void _ModMult(uint64_t *r, const uint64_t *a, const uint64_t *b) {
+    uint64_t p[9]={0}, c1,c2;
 
-  for(int g = 0; g < GPU_GRP_SIZE; g++) {
-    uint64_t *x64 = (uint64_t *)px[g];
-    uint64_t *y64 = (uint64_t *)py[g];
-    uint64_t *d64 = (uint64_t *)dist[g];
-    uint32_t stride = g * KSIZE * blockDim.x;
-
-    (a)[IDX + 0 * blockDim.x + stride] = x64[0];
-    (a)[IDX + 1 * blockDim.x + stride] = x64[1];
-    (a)[IDX + 2 * blockDim.x + stride] = x64[2];
-    (a)[IDX + 3 * blockDim.x + stride] = x64[3];
-
-    (a)[IDX + 4 * blockDim.x + stride] = y64[0];
-    (a)[IDX + 5 * blockDim.x + stride] = y64[1];
-    (a)[IDX + 6 * blockDim.x + stride] = y64[2];
-    (a)[IDX + 7 * blockDim.x + stride] = y64[3];
-
-    (a)[IDX + 8 * blockDim.x + stride] = d64[0];
-    (a)[IDX + 9 * blockDim.x + stride] = d64[1];
-
-#ifdef USE_SYMMETRY
-    (a)[IDX + 10 * blockDim.x + stride] = jumps[g];
-#endif
-  }
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void ShiftR62(uint64_t *r) {
-
-  r[0] = (r[1] << 2) | (r[0] >> 62);
-  r[1] = (r[2] << 2) | (r[1] >> 62);
-  r[2] = (r[3] << 2) | (r[2] >> 62);
-  r[3] = (r[4] << 2) | (r[3] >> 62);
-  // With sign extent
-  r[4] = (int64_t)(r[4]) >> 62;
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void IMult(uint64_t *r,uint64_t *a,int64_t b) {
-
-  uint64_t t[NBBLOCK];
-
-  // Make b positive
-  int64_t msk = b >> 63;
-  int64_t nmsk = ~msk;
-  b = ((-b) & msk) | (b & ~msk);
-  USUBO(t[0],a[0] & nmsk,a[0] & msk);
-  USUBC(t[1],a[1] & nmsk,a[1] & msk);
-  USUBC(t[2],a[2] & nmsk,a[2] & msk);
-  USUBC(t[3],a[3] & nmsk,a[3] & msk);
-  USUB(t[4],a[4] & nmsk,a[4] & msk);
-  Mult2(r,t,b)
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void MulP(uint64_t *r,uint64_t a) {
-
-  uint64_t ah;
-  uint64_t al;
-
-  UMULLO(al,a,0x1000003D1ULL);
-  UMULHI(ah,a,0x1000003D1ULL);
-
-  USUBO(r[0],0ULL,al);
-  USUBC(r[1],0ULL,ah);
-  USUBC(r[2],0ULL,0ULL);
-  USUBC(r[3],0ULL,0ULL);
-  USUB(r[4],a,0ULL);
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void ModNeg256(uint64_t *r,uint64_t *a) {
-
-  uint64_t t[4];
-  USUBO(t[0],0ULL,a[0]);
-  USUBC(t[1],0ULL,a[1]);
-  USUBC(t[2],0ULL,a[2]);
-  USUBC(t[3],0ULL,a[3]);
-  UADDO(r[0],t[0],0xFFFFFFFEFFFFFC2FULL);
-  UADDC(r[1],t[1],0xFFFFFFFFFFFFFFFFULL);
-  UADDC(r[2],t[2],0xFFFFFFFFFFFFFFFFULL);
-  UADD(r[3],t[3],0xFFFFFFFFFFFFFFFFULL);
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void ModNeg256(uint64_t *r) {
-
-  uint64_t t[4];
-  USUBO(t[0],0ULL,r[0]);
-  USUBC(t[1],0ULL,r[1]);
-  USUBC(t[2],0ULL,r[2]);
-  USUBC(t[3],0ULL,r[3]);
-  UADDO(r[0],t[0],0xFFFFFFFEFFFFFC2FULL);
-  UADDC(r[1],t[1],0xFFFFFFFFFFFFFFFFULL);
-  UADDC(r[2],t[2],0xFFFFFFFFFFFFFFFFULL);
-  UADD(r[3],t[3],0xFFFFFFFFFFFFFFFFULL);
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void ModSub256(uint64_t *r,uint64_t *a,uint64_t *b) {
-
-  uint64_t t;
-  uint64_t T[4];
-  USUBO(r[0],a[0],b[0]);
-  USUBC(r[1],a[1],b[1]);
-  USUBC(r[2],a[2],b[2]);
-  USUBC(r[3],a[3],b[3]);
-  USUB(t,0ULL,0ULL);
-  T[0] = 0xFFFFFFFEFFFFFC2FULL & t;
-  T[1] = 0xFFFFFFFFFFFFFFFFULL & t;
-  T[2] = 0xFFFFFFFFFFFFFFFFULL & t;
-  T[3] = 0xFFFFFFFFFFFFFFFFULL & t;
-  UADDO1(r[0],T[0]);
-  UADDC1(r[1],T[1]);
-  UADDC1(r[2],T[2]);
-  UADD1(r[3],T[3]);
-
-}
-
-// ---------------------------------------------------------------------------------------
-
-__device__ void ModSub256(uint64_t* r,uint64_t* b) {
-
-  uint64_t t;
-  uint64_t T[4];
-  USUBO(r[0],r[0],b[0]);
-  USUBC(r[1],r[1],b[1]);
-  USUBC(r[2],r[2],b[2]);
-  USUBC(r[3],r[3],b[3]);
-  USUB(t,0ULL,0ULL);
-  T[0] = 0xFFFFFFFEFFFFFC2FULL & t;
-  T[1] = 0xFFFFFFFFFFFFFFFFULL & t;
-  T[2] = 0xFFFFFFFFFFFFFFFFULL & t;
-  T[3] = 0xFFFFFFFFFFFFFFFFULL & t;
-  UADDO1(r[0],T[0]);
-  UADDC1(r[1],T[1]);
-  UADDC1(r[2],T[2]);
-  UADD1(r[3],T[3]);
-
-}
-
-#ifdef USE_SYMMETRY
-
-// ---------------------------------------------------------------------------------------
-
-__device__ bool ModPositive256(uint64_t *r) {
-
-  // Probability of failure (1/2^192)
-  if(r[3] > 0x7FFFFFFFFFFFFFFFULL) {
-    // Negative
-    ModNeg256(r);
-    return true;
-  } else {
-    return false;
-  }
-
-}
-
-__device__ void ModNeg256Order(uint64_t* r) {
-
-  uint64_t t[4];
-  USUBO(t[0],0ULL,r[0]);
-  USUBC(t[1],0ULL,r[1]);
-  USUBC(t[2],0ULL,r[2]);
-  USUBC(t[3],0ULL,r[3]);
-  UADDO(r[0],t[0],_O[0]);
-  UADDC(r[1],t[1],_O[1]);
-  UADDC(r[2],t[2],_O[2]);
-  UADD(r[3],t[3],_O[3]);
-
-}
-
-#endif
-
-// ---------------------------------------------------------------------------------------
-#define SWAP_ADD(x,y) x+=y;y-=x;
-#define SWAP_SUB(x,y) x-=y;y+=x;
-#define SWAP_NEG(tmp,x,y) tmp = x; x = y; y = -tmp;
-#define MSK62 0x3FFFFFFFFFFFFFFF
-
-__device__ void _DivStep62(int64_t u0,int64_t v0,
-                           int64_t *eta,
-                           int64_t* uu,int64_t* uv,
-                           int64_t* vu,int64_t* vv) {
-
-
-  // u' = (uu*u + uv*v) >> bitCount
-  // v' = (vu*u + vv*v) >> bitCount
-
-  int64_t  bitCount;
-
-#if 0
-
-  // Former divstep62
-  // Do not use eta, u and v have an exponential decay in worst case 
-  // but with low probability to reach this worst case complexity
-
-  int64_t  nb0;
-  bitCount = 62;
-
-  while(true) {
-    
-    // zeros = log2(z & -z)
-    int64_t z = v0 | (UINT64_MAX << bitCount);
-    float f = (float)(z & -z);
-    int zeros = (*(uint32_t*)(&f) >> 23) - 127;
-    v0 >>= zeros;
-    *uu <<= zeros;
-    *uv <<= zeros;
-    bitCount -= zeros;
-
-    /*
-    while(IS_EVEN(v0) && (bitCount > 0)) {
-
-      bitCount--;
-      v0 >>= 1;
-      *uu <<= 1;
-      *uv <<= 1;
-
-    }
-    */
-
-    if(bitCount <= 0)
-      break;
-
-    nb0 = (v0 + u0) & 0x3;
-    if(nb0 == 0) {
-      SWAP_ADD(*vv,*uv);
-      SWAP_ADD(*vu,*uu);
-      SWAP_ADD(v0,u0);
-    } else {
-      SWAP_SUB(*vv,*uv);
-      SWAP_SUB(*vu,*uu);
-      SWAP_SUB(v0,u0);
+#define MULACC(i,j,idx)                        \
+    { uint64_t lo, hi;                         \
+      UMULLO(lo, a[i], b[j]);                  \
+      UMULHI(hi, a[i], b[j]);                  \
+      uint64_t k=idx;                          \
+      UADDO(c1, p[k], lo); p[k]=c1;            \
+      UADDC(c2, p[k+1], hi);                   \
+      UADD(p[k+2], p[k+2], c2);                \
     }
 
-  }
+    MULACC(0,0,0);
 
+    MULACC(0,1,1);
+    MULACC(1,0,1);
 
-#endif
+    MULACC(0,2,2);
+    MULACC(1,1,2);
+    MULACC(2,0,2);
 
-#if 1
+    MULACC(0,3,3);
+    MULACC(1,2,3);
+    MULACC(2,1,3);
+    MULACC(3,0,3);
 
-  int64_t x,y,z;
-  bitCount = 62;
+    MULACC(1,3,4);
+    MULACC(2,2,4);
+    MULACC(3,1,4);
 
-  // divstep62 var time implementation by Peter Dettman
-  // (see https://github.com/bitcoin-core/secp256k1/pull/767)
+    MULACC(2,3,5);
+    MULACC(3,2,5);
 
-  while(true) {
+    MULACC(3,3,6);
 
-    // Use a sentinel bit to count zeros only up to bitCount
-    z = v0 | (UINT64_MAX << bitCount);
+#undef MULACC
 
-#ifdef NOFASTCTZ
-    int zeros = __ffsll(z) - 1;
-#else
-    // zeros = log2(z & -z) is faster than __ffsll()
-    float f = (float)(z & -z);
-    int zeros = (*(uint32_t*)(&f) >> 23) - 127;
-#endif
-
-    v0 >>= zeros;
-    *uu <<= zeros;
-    *uv <<= zeros;
-    *eta -= zeros;
-    bitCount -= zeros;
-
-    if(bitCount <= 0)
-      break;
-
-    if(*eta < 0) {
-      *eta = -*eta;
-      SWAP_NEG(x,u0,v0);
-      SWAP_NEG(y,*uu,*vu);
-      SWAP_NEG(z,*uv,*vv);
+    for(int i=4;i<=8;i++){
+        uint64_t t[5];
+        UMult(t,(p+i),0x1000003D1ULL);
+        UADDO(p[i-4],p[i-4],t[0])
+        UADDC(p[i-3],p[i-3],t[1])
+        UADDC(p[i-2],p[i-2],t[2])
+        UADDC(p[i-1],p[i-1],t[3])
     }
 
-    v0 += u0;
-    *vv += *uv;
-    *vu += *uu;
-
-  }
-
-#endif
-
-
+    uint64_t mp,mh;
+    UMULLO(mp,p[4],0x1000003D1ULL);
+    UMULHI(mh,p[4],0x1000003D1ULL);
+    UADDO(r[0],p[0],mp);
+    UADDC(r[1],p[1],mh);
+    UADDC(r[2],p[2],0);
+    UADD(r[3],p[3],0);
 }
 
-__device__ __noinline__ void _ModInv(uint64_t *R) {
+///////////////////////////////////////////////////////////////////////////////
+
+__device__ __forceinline__ void _ModSqr(uint64_t *r, const uint64_t *a) {
+    _ModMult(r, a, a);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+__device__ __forceinline__ void Add128(uint64_t *r, const uint64_t *b){
+    uint64_t c;
+    UADDO(r[0],r[0],b[0]);
+    UADD(r[1],r[1],b[1]);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// fast sub+conditional add P (mod reduction)
+__device__ __forceinline__ void ModSub256(uint64_t* r, const uint64_t* a, const uint64_t* b){
+    uint64_t t,c;
+    USUBO(r[0],a[0],b[0]);
+    USUBC(r[1],a[1],b[1]);
+    USUBC(r[2],a[2],b[2]);
+    USUBC(r[3],a[3],b[3]);
+    USUB(t,0,0);
+    t = ~t +1; // mask = (borrow) ? 0xFFFFFFFFFFFFFFFF : 0
+    uint64_t P[4]={0xFFFFFFFEFFFFFC2FULL,0xFFFFFFFFFFFFFFFFULL,
+                      0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
+    UADDO1(r[0], P[0] & t);
+    UADDC1(r[1], P[1] & t);
+    UADDC1(r[2], P[2] & t);
+    UADD1(r[3], P[3] & t);
+}
+/////////////////////////
+
+__device__ __forceinline__ void ModSub256(uint64_t* r,const uint64_t* b)
+{
+    uint64_t t, c;
+    USUBO(r[0],r[0],b[0]);
+    USUBC(r[1],r[1],b[1]);
+    USUBC(r[2],r[2],b[2]);
+    USUBC(r[3],r[3],b[3]);
+    USUB(t,0,0);
+    t=~t+1;
+    uint64_t P[4]={0xFFFFFFFEFFFFFC2FULL,0xFFFFFFFFFFFFFFFFULL,
+                      0xFFFFFFFFFFFFFFFFULL,0xFFFFFFFFFFFFFFFFULL};
+    UADDO1(r[0],P[0]&t);
+    UADDC1(r[1],P[1]&t);
+    UADDC1(r[2],P[2]&t);
+    UADD1(r[3],P[3]&t);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+__device__ __forceinline__ void _ModMult(uint64_t *r, uint64_t *a)
+{
+    _ModMult(r, r, a);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+__device__ __forceinline__ void _ModInvGrouped(uint64_t r[GPU_GRP_SIZE][4]){
+    uint64_t acc[4],tmp[4],inv[5],newV[4];
+
+    Load256(acc,r[0]);
+    for(uint32_t i=1;i<GPU_GRP_SIZE;++i)
+        _ModMult(acc,acc,r[i]);
+
+    inv[4]=0;
+    Load256(inv, acc);
+    _ModInv(inv);
+
+    for(int i=GPU_GRP_SIZE-1;i>0;i--){
+        _ModMult(newV,inv,r[i-1]);
+        _ModMult(inv,inv,r[i]);
+        Load256(r[i],newV);
+    }
+    Load256(r[0],inv);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+__device__ __forceinline__ void _ModInv(uint64_t *R){
 
   // Compute modular inverse of R mop P (using 320bits signed integer)
   // 0 < this < P  , P must be odd
@@ -769,7 +417,6 @@ __device__ void _ModMult(uint64_t *r,uint64_t *a,uint64_t *b) {
   UADDC1(r512[5],t[2]);
   UADDC1(r512[6],t[3]);
   UADD1(r512[7],t[4]);
-
   // Reduce from 512 to 320 
   UMult(t,(r512 + 4),0x1000003D1ULL);
   UADDO1(r512[0],t[0]);
