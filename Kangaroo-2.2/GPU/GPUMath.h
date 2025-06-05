@@ -656,32 +656,5 @@ __device__ void _ModSqr(uint64_t *rp,const uint64_t *up) {
 
 }
 
-// ---------------------------------------------------------------------------------------
-// Compute all ModInv of the group
-// ---------------------------------------------------------------------------------------
+#endif // GPUMATHH
 
-__device__ __noinline__ void _ModInvGrouped(uint64_t r[GPU_GRP_SIZE][4]) {
-
-  uint64_t subp[GPU_GRP_SIZE][4];
-  uint64_t newValue[4];
-  uint64_t inverse[5];
-
-  Load256(subp[0],r[0]);
-  for(uint32_t i = 1; i < GPU_GRP_SIZE; i++) {
-    _ModMult(subp[i],subp[i - 1],r[i]);
-  }
-
-  // We need 320bit signed int for ModInv
-  Load256(inverse,subp[GPU_GRP_SIZE - 1]);
-  inverse[4] = 0;
-  _ModInv(inverse);
-
-  for(uint32_t i = GPU_GRP_SIZE - 1; i > 0; i--) {
-    _ModMult(newValue,subp[i - 1],inverse);
-    _ModMult(inverse,r[i]);
-    Load256(r[i],newValue);
-  }
-
-  Load256(r[0],inverse);
-
-}
