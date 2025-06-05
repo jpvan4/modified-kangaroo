@@ -3,6 +3,7 @@
 
 #include <cuda.h>
 #include <stdint.h>
+#include "GPUGroup.h"
 #include "GPUMath.h"
 
 // Use grp sizee 32 for higher occupancy(can be tuned though)
